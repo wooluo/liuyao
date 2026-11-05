@@ -1009,9 +1009,9 @@ async function renderSettings() {
               <input type="password" data-f="api_key" placeholder="${p.has_key ? "已保存（留空则不修改）" : "未设置"}" autocomplete="new-password">
             </div>
           </div>
-          <label class="field">模型名</label>
-          <input type="text" data-f="model" value="${esc(p.model)}" list="models-${pid}" placeholder="如 glm-5.3">
-          <datalist id="models-${pid}"></datalist>
+          <label class="field">模型名 <span style="font-weight:400">（可下拉选择或手动输入）</span></label>
+          <select data-f="model_select" hidden></select>
+          <input type="text" data-f="model" value="${esc(p.model)}" placeholder="如 glm-5.3" style="margin-top:8px">
           <label class="chk-line"><input type="checkbox" data-f="fast" ${p.fast ? "checked" : ""}> 快速模式（关闭深度思考，GLM 出结果更快）</label>
           <div class="btn-row">
             <button class="btn small ghost" data-fetchmodels="${pid}">获取模型列表</button>
@@ -1050,6 +1050,39 @@ async function renderSettings() {
     return card && $(`[data-f="${f}"]`, card);
   }
 
+  // 模型列表缓存与下拉填充
+  function cachedModels(pid) {
+    try { return JSON.parse(localStorage.getItem("liuyao.models." + pid) || "[]"); } catch (e) { return []; }
+  }
+  function cacheModels(pid, ms) {
+    try { localStorage.setItem("liuyao.models." + pid, JSON.stringify(ms.slice(0, 80))); } catch (e) { /* 忽略 */ }
+  }
+  function fillModelSelect(card, models) {
+    const sel = $('[data-f="model_select"]', card);
+    const mi = $('[data-f="model"]', card);
+    if (!sel) return;
+    if (!models.length) { sel.hidden = true; sel.innerHTML = ""; return; }
+    sel.innerHTML = models.map((m) =>
+      `<option value="${esc(m)}" ${m === mi.value.trim() ? "selected" : ""}>${esc(m)}</option>`).join("");
+    sel.hidden = false;
+  }
+  function wireModelSelect(card) {
+    const sel = $('[data-f="model_select"]', card);
+    const mi = $('[data-f="model"]', card);
+    if (!sel) return;
+    sel.addEventListener("change", () => { if (sel.value) mi.value = sel.value; });
+    mi.addEventListener("input", () => {
+      Array.from(sel.options).forEach((o) => { o.selected = o.value === mi.value.trim(); });
+    });
+  }
+
+  // 页面载入即回填上次拉取过的模型列表
+  $$(".prov-card").forEach((card) => {
+    wireModelSelect(card);
+    const ms = cachedModels(card.dataset.pid);
+    if (ms.length) fillModelSelect(card, ms);
+  });
+
   $$("[data-fetchmodels]").forEach((b) =>
     b.addEventListener("click", async () => {
       const pid = b.dataset.fetchmodels;
@@ -1058,11 +1091,14 @@ async function renderSettings() {
       await saveProviderCfg();  // 先保存当前编辑值再拉列表
       try {
         const { models } = await api("/api/models?provider=" + pid);
-        const dl = $("#models-" + pid);
-        dl.innerHTML = models.map((m) => `<option value="${esc(m)}">`).join("");
+        const card = $(`.prov-card[data-pid="${pid}"]`);
+        cacheModels(pid, models);
+        fillModelSelect(card, models);
         const mi = provField(pid, "model");
         if (models.length && !mi.value.trim()) mi.value = models[0];
-        line.textContent = `✓ 发现 ${models.length} 个模型${models.length ? "，已填入候选列表" : ""}`;
+        line.textContent = models.length
+          ? `✓ 发现 ${models.length} 个模型，已在上方下拉可选`
+          : "✗ 未发现可用模型";
         line.className = "test-line ok-box";
       } catch (e) {
         line.textContent = "✗ " + e.message;
