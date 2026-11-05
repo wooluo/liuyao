@@ -501,6 +501,8 @@ function hintFor(msg, pid) {
   let out = "解卦失败：" + msg;
   if (/401|403|api.?key|unauthorized/i.test(msg)) {
     out += "\n提示：请到「设置」检查 API Key 是否正确保存。";
+  } else if (/429|1113|余额|资源包|quota|rate.?limit/i.test(msg)) {
+    out += "\n提示：账户额度不足或并发超限——请到 open.bigmodel.cn 控制台查看 Coding Plan 状态/余额，或先切换到 LM Studio 本地模型（免费）。";
   } else if (/404|model/i.test(msg)) {
     out += "\n提示：请到「设置」核对模型名称，或点「获取模型列表」选择。";
   } else if (pid === "lmstudio") {

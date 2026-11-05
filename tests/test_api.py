@@ -139,6 +139,40 @@ class TestAPI(unittest.TestCase):
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 400)
 
+    def test_08_resolve_model_skips_embedding(self):
+        # 自动选模型应跳过 embedding 等非对话模型
+        orig = appmod.fetch_models
+        appmod.fetch_models = lambda p, timeout=8: [
+            "text-embedding-nomic-embed-text-v1.5", "gemma-4-26b-it"]
+        try:
+            self.assertEqual(
+                appmod.resolve_model({"model": "", "base": "x", "protocol": "openai"}),
+                "gemma-4-26b-it")
+            self.assertEqual(appmod.resolve_model({"model": "手选模型"}), "手选模型")
+        finally:
+            appmod.fetch_models = orig
+
+    def test_07_proxy_bypass_local(self):
+        # 回归：系统/环境代理存在时，本地地址必须直连（修复 Clash 等代理导致 localhost 502）
+        bogus = "http://127.0.0.1:9"  # 无人监听的代理端口
+        saved = {k: os.environ.get(k) for k in
+                 ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")}
+        try:
+            for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+                os.environ[k] = bogus
+            models = appmod.fetch_models(
+                {"base": "http://127.0.0.1:%d/v1" % self.stub.server_address[1],
+                 "protocol": "openai"})
+            self.assertEqual(models[0], "stub-model")
+            self.assertTrue(appmod._is_local_url("http://localhost:1234/v1"))
+            self.assertFalse(appmod._is_local_url("https://open.bigmodel.cn/api/paas/v4"))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

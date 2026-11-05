@@ -167,6 +167,26 @@ def build_messages(reading):
     return system, user
 
 
+def _is_local_url(url):
+    """本地/回环地址判断（这些地址必须绕过系统代理直连）。"""
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+    except ValueError:
+        return False
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host.endswith(".local")
+
+
+# 本地直连 opener（无视系统代理，否则 Clash 类代理会对 localhost 返回 502）
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def smart_urlopen(req, timeout):
+    """本地地址直连，远程地址尊重环境/系统代理。"""
+    if _is_local_url(req.full_url):
+        return _DIRECT_OPENER.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def fetch_models(pcfg, timeout=8):
     base = (pcfg.get("base") or "").rstrip("/")
     if not base:
@@ -178,7 +198,7 @@ def fetch_models(pcfg, timeout=8):
         headers["Authorization"] = "Bearer " + key
         headers["x-api-key"] = key
     req = urllib.request.Request(url, headers=headers, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with smart_urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     ids = []
     for item in data.get("data", []):
@@ -186,6 +206,10 @@ def fetch_models(pcfg, timeout=8):
         if mid:
             ids.append(mid)
     return ids
+
+
+# 自动选模型时排除非对话模型（embedding/OCR/语音等）
+_NON_CHAT_MODEL = re.compile(r"embed|rerank|ocr|whisper|speech|tts|stt|audio|clip", re.I)
 
 
 def resolve_model(pcfg):
@@ -196,7 +220,9 @@ def resolve_model(pcfg):
         models = fetch_models(pcfg)
     except Exception:
         models = []
-    return models[0] if models else ""
+    chat = [m for m in models if not _NON_CHAT_MODEL.search(m)]
+    pool = chat or models
+    return pool[0] if pool else ""
 
 
 def open_upstream(pcfg, model, system, user):
@@ -221,7 +247,7 @@ def open_upstream(pcfg, model, system, user):
                                 {"role": "user", "content": user}]}
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
                                  headers=headers, method="POST")
-    return urllib.request.urlopen(req, timeout=600)
+    return smart_urlopen(req, timeout=600)
 
 
 def _extract_full_text(obj):
