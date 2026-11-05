@@ -113,6 +113,16 @@ function fmtNow() {
 }
 
 function readingSummaryClient(r) {
+  if (r.type === "bazi") {
+    const chart = r.pan || {};
+    return {
+      id: r.id, created: r.created || "", question: r.question || "", mode: "bazi",
+      ben: "八字·" + (r.name || "命主"), bian: "",
+      day_ganzhi: ((chart.pillars || {}).day || {}).gz || "",
+      moving_count: 0,
+      interpretations: (r.interpretations || []).length
+    };
+  }
   const pan = r.pan || {};
   const ben = pan.mode === "three" ? (pan.tri || {}).name : (pan.ben || {}).name;
   return {
@@ -197,6 +207,22 @@ async function clientApi(path, opts = {}) {
       id: makeId(), created: fmtNow(),
       question: (body.question || "").slice(0, 200),
       pan, interpretations: []
+    };
+    readings.unshift(reading);
+    lsSet("liuyao.readings", readings);
+    return { reading };
+  }
+  if (path === "/api/bazi") {
+    const chart = body.chart || {};
+    if (chart.mode !== "bazi" || !chart.bazi_text) throw new Error("八字排盘数据不合法");
+    const readings = lsGet("liuyao.readings", []);
+    const reading = {
+      id: makeId(), created: fmtNow(), type: "bazi",
+      name: (body.name || "命主").slice(0, 20),
+      gender: body.gender === "女" ? "女" : "男",
+      birth: body.birth || "",
+      question: (body.question || "").slice(0, 200),
+      pan: chart, interpretations: []
     };
     readings.unshift(reading);
     lsSet("liuyao.readings", readings);
@@ -459,6 +485,7 @@ function route() {
   window.scrollTo(0, 0);
   if (page === "history") return renderHistory();
   if (page === "settings") return renderSettings();
+  if (page === "bazi") return renderBazi();
   if (page === "reading" && m[2]) return renderReading(m[2]);
   return renderCast();
 }
@@ -613,6 +640,77 @@ async function doCast() {
   }
 }
 
+// ---------------- 八字算命页 ----------------
+let baziForm = { name: "", gender: "男", date: "", hour: "12", question: "" };
+
+async function renderBazi() {
+  await loadConfig();
+  app.innerHTML = `
+  <section>
+    <div class="card">
+      <h2>八字算命 <span class="sub">子平八字 · 节气精确排盘</span></h2>
+      <label class="field">姓名（可不填）</label>
+      <input type="text" id="bz-name" maxlength="12" placeholder="命主姓名">
+      <label class="field">性别 <span class="warn" style="font-weight:400">（决定大运顺逆，必选）</span></label>
+      <div class="mode-row">
+        <span class="chip" id="bz-male">男</span>
+        <span class="chip" id="bz-female">女</span>
+      </div>
+      <label class="field">出生日期（公历/阳历）</label>
+      <input type="date" id="bz-date">
+      <label class="field">出生时辰</label>
+      <select id="bz-hour">
+        <option value="">不知道时辰（按三柱论）</option>
+        ${LiuYaoBazi.HOUR_NAMES.map((n, i) => `<option value="${i}">${n}</option>`).join("")}
+      </select>
+      <label class="field">想了解的方面（可不填，如：事业、财运、婚姻、健康）</label>
+      <input type="text" id="bz-q" maxlength="60" placeholder="例：未来十年的事业发展方向">
+      <div class="btn-row">
+        <button class="btn primary big" id="bz-go">排盘算命 →</button>
+      </div>
+      <div class="hint">年柱以立春为界、月柱以节气为界、23点起按次日子时换日；排盘由程序按天文算法完成，AI 只负责解读。</div>
+    </div>
+  </section>`;
+
+  const nameEl = $("#bz-name"), dateEl = $("#bz-date"), hourEl = $("#bz-hour"), qEl = $("#bz-q");
+  nameEl.value = baziForm.name; dateEl.value = baziForm.date; hourEl.value = baziForm.hour; qEl.value = baziForm.question;
+  const paintGender = () => {
+    $("#bz-male").classList.toggle("active", baziForm.gender === "男");
+    $("#bz-female").classList.toggle("active", baziForm.gender === "女");
+  };
+  paintGender();
+  $("#bz-male").addEventListener("click", () => { baziForm.gender = "男"; paintGender(); });
+  $("#bz-female").addEventListener("click", () => { baziForm.gender = "女"; paintGender(); });
+  nameEl.addEventListener("input", () => baziForm.name = nameEl.value);
+  dateEl.addEventListener("change", () => baziForm.date = dateEl.value);
+  hourEl.addEventListener("change", () => baziForm.hour = hourEl.value);
+  qEl.addEventListener("input", () => baziForm.question = qEl.value);
+
+  $("#bz-go").addEventListener("click", async () => {
+    const btn = $("#bz-go");
+    if (!baziForm.date) { toast("请选择出生日期"); return; }
+    const [ys, ms, ds] = baziForm.date.split("-").map(Number);
+    if (!ys || !ms || !ds) { toast("出生日期格式不正确"); return; }
+    const hour = baziForm.hour === "" ? null : parseInt(baziForm.hour, 10);
+    const hh = hour === null ? "12:00" : String(hour === 23 ? 23 : hour).padStart(2, "0") + ":00";
+    btn.disabled = true; btn.textContent = "排盘中…";
+    try {
+      const chart = LiuYaoBazi.buildChart({
+        name: baziForm.name.trim(), gender: baziForm.gender,
+        y: ys, m: ms, d: ds, hour
+      });
+      const data = await api("/api/bazi", {
+        method: "POST",
+        body: { name: chart.name, gender: chart.gender, birth: baziForm.date + " " + hh, question: baziForm.question.trim(), chart }
+      });
+      location.hash = "#/reading/" + data.reading.id;
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false; btn.textContent = "排盘算命 →";
+    }
+  });
+}
+
 // ---------------- 排盘页 ----------------
 function lineSymHtml(v) {
   const s = v === 7 || v === 9 ? YANG : YIN;
@@ -642,6 +740,7 @@ async function renderReading(id) {
     return;
   }
   const cfg = (await loadConfig()) || { providers: {}, provider: "" };
+  if (reading.type === "bazi") return renderBaziReading(reading, cfg);
   const pan = reading.pan;
   const z = pan.sizhi;
   const names = pan.mode === "six" ? POS_SIX : POS_THREE;
@@ -897,6 +996,13 @@ function hintFor(msg, pid) {
 }
 
 function panTextClient(r) {
+  if (r.type === "bazi") {
+    const rows = [r.pan.bazi_text];
+    if (r.question) rows.push("【想了解的方面】" + r.question);
+    const it = (r.interpretations || [])[(r.interpretations || []).length - 1];
+    if (it) rows.push("\n【AI 论命】(" + it.label + " · " + it.model + ")\n" + it.text);
+    return rows.join("\n");
+  }
   const pan = r.pan, z = pan.sizhi;
   const rows = [];
   rows.push("【起卦时间】" + pan.datetime + "（" + z.weekday + "）");
@@ -935,6 +1041,115 @@ function panTextClient(r) {
   return rows.join("\n");
 }
 
+// ---------------- 八字命盘详情页 ----------------
+function pillarCardHtml(tag, p, isDay) {
+  if (!p) {
+    return `<div class="bz-pillar">
+      <div class="bz-col">${tag}</div>
+      <div class="bz-sg">&nbsp;</div>
+      <div class="bz-gz">?</div>
+      <div class="bz-extra">时辰不详</div>
+    </div>`;
+  }
+  return `<div class="bz-pillar ${isDay ? "day" : ""}">
+    <div class="bz-col">${tag}</div>
+    <div class="bz-sg">${esc(p.sg_stem)}</div>
+    <div class="bz-gz"><span class="e-${esc(p.stem_elem)}">${esc(p.stem)}</span><span class="e-${esc(p.branch_elem)}">${esc(p.branch)}</span></div>
+    <div class="bz-extra">藏 ${p.cz.map((h) => esc(h)).join(" ")}</div>
+    <div class="bz-extra bz-sgmain">${esc(p.sg_main)}</div>
+    <div class="bz-extra bz-nayin">${esc(p.nayin)}</div>
+  </div>`;
+}
+
+function baziChartHtml(c) {
+  const ps = c.pillars;
+  const wuxing = Object.entries(c.counts).map(([e, n]) =>
+    `<span class="bz-wx e-${esc(e)}">${esc(e)} <b>${n}</b></span>`).join("");
+  const miss = c.missing.length ? `<span class="tag red">缺 ${esc(c.missing.join("、"))}</span>` : '<span class="tag">五行不缺</span>';
+  return `
+    <div class="bz-grid">
+      ${pillarCardHtml("年柱", ps.year, false)}
+      ${pillarCardHtml("月柱", ps.month, false)}
+      ${pillarCardHtml("日柱", ps.day, true)}
+      ${pillarCardHtml("时柱", ps.hour, false)}
+    </div>
+    <div class="bz-meta">${esc(ps.day.stem)}${esc(ps.day.stem_elem)}日主，生于${esc(ps.month.branch)}月 · 属${esc(c.zodiac)}${c.hour_known ? "" : " · 时辰不详（三柱论）"}</div>
+    <div class="chip-row" style="margin-top:8px">${wuxing}${miss}</div>
+    <div class="bz-dayun">
+      <h4>大运 · ${c.forward ? "顺行" : "逆行"} · 约${c.start_sui}岁起运 <span class="gong">每十年一换</span></h4>
+      <div class="dy-row">
+        ${c.dayun.map((d) => `<span class="dy ${d.from <= 0 ? "" : ""}"><b class="e-${esc(d.gz[0] === "甲" || d.gz[0] === "乙" ? "木" : d.gz[0] === "丙" || d.gz[0] === "丁" ? "火" : d.gz[0] === "戊" || d.gz[0] === "己" ? "土" : d.gz[0] === "庚" || d.gz[0] === "辛" ? "金" : "水")}">${esc(d.gz)}</b><i>${d.from}-${d.to}岁</i></span>`).join("")}
+      </div>
+    </div>`;
+}
+
+async function renderBaziReading(reading, cfg) {
+  const c = reading.pan;
+  const provChips = Object.entries(cfg.providers || {}).map(([pid, p]) =>
+    `<span class="chip ${pid === cfg.provider ? "active" : ""}" data-prov="${pid}">${esc(p.label)}</span>`).join("");
+  const interps = reading.interpretations || [];
+  const latest = interps[interps.length - 1];
+  const oldHtml = interps.length > 1
+    ? `<details class="old-interp"><summary>历史解读（${interps.length - 1} 次）</summary>${
+        interps.slice(0, -1).reverse().map((it) =>
+          `<div style="margin-top:10px"><div class="interp-meta">${esc(it.at)} · ${esc(it.label)} · ${esc(it.model)}</div><div class="stream">${md(it.text)}</div></div>`).join("")
+      }</details>`
+    : "";
+
+  app.innerHTML = `
+  <section>
+    <div class="card">
+      <h2>命主</h2>
+      <div style="font-size:18px;font-family:var(--serif);letter-spacing:1px">${esc(reading.name)} <span style="color:var(--ink-soft);font-size:14px">· ${esc(reading.gender)}命</span></div>
+      <div class="chip-row" style="margin-top:8px">
+        <span class="tag">公历 ${esc(reading.birth)}</span>
+        <span class="tag meta">八字命盘 · ${esc(c.zodiac)}</span>
+      </div>
+      ${reading.question ? `<div class="hint">想了解：${esc(reading.question)}</div>` : ""}
+    </div>
+    <div class="card">
+      <h2>八字命盘 <span class="sub">节气精确排盘</span></h2>
+      ${baziChartHtml(c)}
+      <div class="btn-row">
+        <button class="btn ghost small" id="copy-pan">复制命盘文本</button>
+        <a class="btn ghost small" href="#/bazi" style="text-decoration:none">再算一命</a>
+      </div>
+    </div>
+    <div class="card">
+      <h2>AI 论命 <span class="sub">流式输出 · 自动保存</span></h2>
+      <div class="chips" id="prov-chips">${provChips}</div>
+      <div class="btn-row">
+        <button class="btn primary" id="start-interp">${latest ? "再算一次" : "开始算命"}</button>
+        <button class="btn ghost" id="stop-interp" style="display:none">停止</button>
+        ${latest ? '<button class="btn ghost small" id="copy-interp">复制解读</button>' : ""}
+      </div>
+      ${latest ? `<div class="interp-meta">最近：${esc(latest.at)} · ${esc(latest.label)} · ${esc(latest.model)}</div>` : ""}
+      <div class="stream ${latest ? "" : "waiting"}" id="interp-area">${latest ? md(latest.text) : "选择解读服务（点上方标签切换），然后点「开始算命」"}</div>
+      <div class="err-box" id="interp-err" hidden></div>
+      ${oldHtml}
+    </div>
+  </section>`;
+
+  $("#copy-pan").addEventListener("click", () => copyText(c.bazi_text));
+  const ci = $("#copy-interp");
+  if (ci) ci.addEventListener("click", () => copyText(latest.text));
+  $$("#prov-chips .chip").forEach((el) =>
+    el.addEventListener("click", async () => {
+      const pid = el.dataset.prov;
+      try {
+        await api("/api/config", { method: "POST", body: { provider: pid } });
+        cfg.provider = pid;
+        $$("#prov-chips .chip").forEach((x) => x.classList.toggle("active", x.dataset.prov === pid));
+        toast("默认解读服务：" + cfg.providers[pid].label);
+      } catch (e) { toast(e.message); }
+    }));
+  $("#start-interp").addEventListener("click", () => startInterp(reading.id, cfg.provider));
+  $("#stop-interp").addEventListener("click", () => {
+    if (interpCtl) interpCtl.abort();
+    if (nativeStreamCancel) nativeStreamCancel();
+  });
+}
+
 // ---------------- 历史页 ----------------
 async function renderHistory() {
   let list = [];
@@ -952,7 +1167,7 @@ async function renderHistory() {
           <div class="hist-q">${esc(r.question || "（未注明所问之事）")}</div>
           <div class="hist-meta">
             <span>${esc(r.created)}</span><span>${esc(r.day_ganzhi)}日</span>
-            <span>${r.mode === "six" ? "六爻" : "三爻"}</span>
+            <span>${r.mode === "bazi" ? "八字" : r.mode === "six" ? "六爻" : "三爻"}</span>
             <span>${r.moving_count ? r.moving_count + " 个动爻" : "静卦"}</span>
             <span>${r.interpretations ? "已解读 ×" + r.interpretations : "未解读"}</span>
           </div>

@@ -245,6 +245,44 @@ input::placeholder { color: var(--ink-faint); }
 .e-火 { color: #b0452f; }
 .e-土 { color: #8a6d3b; }
 
+/* ---------- 八字命盘 ---------- */
+.bz-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.bz-pillar {
+  border: 1.5px solid var(--line); border-radius: 10px;
+  padding: 8px 2px; text-align: center;
+  background: #fffdf6;
+}
+.bz-pillar.day { border-color: var(--accent); background: rgba(168, 64, 47, 0.05); }
+.bz-col { font-size: 11.5px; color: var(--ink-faint); margin-bottom: 2px; }
+.bz-sg { font-size: 11.5px; color: var(--gold); min-height: 16px; }
+.bz-gz {
+  font-family: var(--serif); font-size: 26px; font-weight: 700;
+  letter-spacing: 2px; line-height: 1.4; white-space: nowrap;
+}
+.bz-pillar.day .bz-gz { color: var(--accent-deep); }
+.bz-extra { font-size: 10.5px; color: var(--ink-faint); line-height: 1.5; }
+.bz-sgmain { color: var(--ink-soft); }
+.bz-nayin { color: var(--gold); }
+.bz-meta { margin-top: 10px; font-size: 13px; color: var(--ink-soft); }
+.bz-wx {
+  font-size: 13px; padding: 4px 10px; border-radius: 6px;
+  background: rgba(217, 205, 174, 0.2); border: 1px solid var(--line);
+}
+.bz-wx b { font-size: 14px; }
+.bz-dayun { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 10px; }
+.bz-dayun h4 {
+  margin: 0 0 8px; font-family: var(--serif); font-size: 14px; letter-spacing: 1px;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+}
+.bz-dayun h4 .gong { font-size: 11.5px; color: var(--ink-faint); font-family: inherit; letter-spacing: 0; font-weight: 400; }
+.dy-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.dy {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: #fffdf6; font-family: var(--serif); font-size: 14px;
+}
+.dy i { font-style: normal; font-size: 10.5px; color: var(--ink-faint); font-family: -apple-system, sans-serif; }
+
 /* ---------- 解卦 ---------- */
 .stream {
   margin-top: 12px; padding: 14px 16px;

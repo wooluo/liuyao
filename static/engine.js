@@ -438,6 +438,10 @@
   var SYSTEM_THREE = "你是一位熟悉《周易》八卦象意的卦师，用通俗易懂的现代汉语为人解卦。\n用户提供的是「三爻简化金钱课」：三枚硬币摇三次得到一个经卦（八纯卦之一），可能带动爻与变卦。数据已由程序计算，直接采信，不要重新推演。\n解卦要求：\n1. 概述本卦卦象（卦名、五行、基本象意：如乾健、坤顺、震动、巽入、坎陷、离丽、艮止、兑悦）。\n2. 结合所问之事，用八卦万物类象（人物、性情、事态走向）展开分析。\n3. 若有动爻，说明阴阳变化带来的趋势转折与变卦含义。\n4. 参考日柱干支与卦宫五行的生克关系简断旺衰。\n5. 给出明确结论与建议，条理清晰，使用「## 小标题」和要点列表；不要输出 Markdown 表格。\n6. 结尾固定附一句：以上卦象分析仅供参考。";
 
   function buildMessages(reading) {
+    // 八字命盘由 bazi.js 提供提示词（保持单一计算源）
+    if (reading.type === "bazi" && global.LiuYaoBazi) {
+      return global.LiuYaoBazi.buildMessages(reading);
+    }
     var pan = reading.pan;
     var q = (reading.question || "").trim();
     var system = pan.mode === "three" ? SYSTEM_THREE : SYSTEM_SIX;
@@ -445,9 +449,23 @@
     return { system: system, user: user };
   }
 
+  // 供八字模块（bazi.js）使用的历法底层：节气时刻表（UTC 秒）、日柱索引、干支字符
+  function allTerms(dt) {
+    var out = [];
+    [dt.y - 1, dt.y, dt.y + 1].forEach(function (year) {
+      TERMS.forEach(function (t) {
+        out.push({ name: t.name, branch: t.branch,
+                   ts: (termJD(year, t.mh, t.dh, t.deg) - 2440587.5) * 86400 });
+      });
+    });
+    return out;
+  }
+
   global.LiuYao = {
     parseThrow: parseThrow, lineSymbol: lineSymbol, lineLabel: lineLabel,
     buildPan: buildPan, buildTriPan: buildTriPan, panText: panText,
-    buildMessages: buildMessages, nowDT: nowDT, localTZ: localTZ
+    buildMessages: buildMessages, nowDT: nowDT, localTZ: localTZ,
+    STEMS: STEMS, BRANCHES: BRANCHES,
+    dayGanzhiIdx: dayGanzhiIdx, allTerms: allTerms
   };
 })(typeof window !== "undefined" ? window : globalThis);

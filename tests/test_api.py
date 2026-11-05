@@ -104,6 +104,44 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(pan["moving"], [1, 4])
         self.assertEqual(pan["bian"]["name"], "泽水困")
 
+    def test_02b_bazi_chain(self):
+        # 八字：保存 → 论命提示词（SYSTEM_BAZI + bazi_text）→ 存档 → 摘要
+        chart = {"mode": "bazi", "bazi_text": "【命主】李四（男，属马）\n【四柱】年柱 庚午 …",
+                 "pillars": {"day": {"gz": "戊子"}}, "name": "李四", "gender": "男"}
+        out = json.loads(self.request("POST", "/api/bazi", {
+            "name": "李四", "gender": "男", "birth": "1990-05-23 14:00",
+            "question": "事业发展", "chart": chart}))
+        rid = out["reading"]["id"]
+        self.assertEqual(out["reading"]["pan"]["mode"], "bazi")
+        raw = self.request("POST", "/api/interpret", {"id": rid, "provider": "glm"})
+        self.assertEqual(raw, "## 卦象总览\n测试解卦文本。")
+        body = StubLLM.last_request
+        sysmsg = body["messages"][0]["content"] if body["messages"][0]["role"] == "system" else ""
+        joined = "".join(m["content"] for m in body["messages"])
+        self.assertIn("子平八字", sysmsg)
+        self.assertIn("【命主】李四", joined)
+        self.assertIn("事业发展", joined)
+        summary = json.loads(self.request("GET", "/api/readings"))["readings"]
+        entry = next(x for x in summary if x["id"] == rid)
+        self.assertEqual(entry["ben"], "八字·李四")
+        self.assertEqual(entry["mode"], "bazi")
+        self.assertEqual(entry["day_ganzhi"], "戊子")
+        self.request("DELETE", "/api/readings/" + rid)
+
+    def test_02c_bazi_bad_400(self):
+        try:
+            self.request("POST", "/api/bazi", {"birth": "bad",
+                                               "chart": {"mode": "bazi", "bazi_text": "x"}})
+            self.fail("bad birth 应 400")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+        try:
+            self.request("POST", "/api/bazi", {"birth": "1990-05-23 14:00",
+                                               "chart": {"mode": "six"}})
+            self.fail("chart.mode 非法应 400")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+
     def test_03_models(self):
         out = json.loads(self.request("GET", "/api/models?provider=glm"))
         self.assertEqual(out["models"][0], "stub-model")

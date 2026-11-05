@@ -62,6 +62,18 @@ SYSTEM_SIX = """你是一位精通《周易》与京房纳甲六爻的资深卦�
 7. 结尾固定附一句：以上卦象分析仅供参考。
 若个别信息（如月建）未提供，说明缺失后基于日柱继续分析，不要编造数据。"""
 
+SYSTEM_BAZI = """你是一位精通传统命理（子平八字）的老师，用通俗易懂的现代汉语为人论命。
+用户提供一份由程序按天文节气精确排出的八字命盘（四柱、藏干、纳音、十神、五行分布、大运、生肖等）。数据已由程序计算，你必须直接采信，禁止重新排盘、更改或质疑任何排盘数据。
+论命要求：
+1. 开头用两三句话概括命局大势（日主与月令的关系、五行分布、强弱倾向）。
+2. 判断日主强弱（得令、得地、得势三个维度），据此确定用神、喜神、忌神，并用一句话解释它们分别代表什么。
+3. 结合十神与宫位分主题展开：性格特质、事业与职业倾向、财运、婚姻感情、六亲缘份、健康注意；有则论之，无则不必生造。
+4. 结合大运：说明起运年龄、顺逆，指出当前（2026 年，丙午流年）所行大运与未来十年的整体走势、关键年龄段与注意事项。
+5. 若时辰缺失，明确说明是三柱推算、相关结论精度有限，并提示补全时辰可更准确。
+6. 用「## 小标题」与要点列表，专业术语用一句话白话解释；语气温和专业，避免绝对化断语；不要输出 Markdown 表格。
+7. 结尾固定附一句：以上命理分析仅供参考，命运掌握在自己手中。
+若「想了解的方面」有注明，围绕它重点展开；未注明则综合全面分析。"""
+
 SYSTEM_THREE = """你是一位熟悉《周易》八卦象意的卦师，用通俗易懂的现代汉语为人解卦。
 用户提供的是「三爻简化金钱课」：三枚硬币摇三次得到一个经卦（八纯卦之一），可能带动爻与变卦。数据已由程序计算，直接采信，不要重新推演。
 解卦要求：
@@ -98,6 +110,8 @@ def load_config():
     out["mode"] = cfg.get("mode", out["mode"])
     out["provider"] = cfg.get("provider", out["provider"])
     for pid, p in (cfg.get("providers") or {}).items():
+        if pid == "lmstudio":  # 正式版移除的测试配置，自动清理
+            continue
         if pid in out["providers"] and isinstance(p, dict):
             for k in ("label", "protocol", "base", "model"):
                 if isinstance(p.get(k), str):
@@ -131,6 +145,17 @@ def save_readings(readings):
 
 
 def reading_summary(r):
+    if r.get("type") == "bazi":
+        chart = r.get("pan") or {}
+        day_gz = ((chart.get("pillars") or {}).get("day") or {}).get("gz", "")
+        return {
+            "id": r["id"], "created": r.get("created", ""),
+            "question": r.get("question", ""), "mode": "bazi",
+            "ben": "八字·" + (r.get("name") or "命主"), "bian": "",
+            "day_ganzhi": day_gz,
+            "moving_count": 0,
+            "interpretations": len(r.get("interpretations") or []),
+        }
     pan = r.get("pan") or {}
     if pan.get("mode") == "three":
         ben = (pan.get("tri") or {}).get("name", "?")
@@ -158,6 +183,11 @@ def _local_tz_hours():
 
 
 def build_messages(reading):
+    if reading.get("type") == "bazi":
+        chart = reading["pan"]
+        q = (reading.get("question") or "").strip()
+        user = chart.get("bazi_text", "") + "\n\n【想了解的方面】" + (q or "（未注明，请综合全面分析）")
+        return SYSTEM_BAZI, user
     pan = reading["pan"]
     q = (reading.get("question") or "").strip()
     system = SYSTEM_THREE if pan.get("mode") == "three" else SYSTEM_SIX
@@ -392,6 +422,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/cast":
             self._handle_cast()
+        elif path == "/api/bazi":
+            self._handle_bazi()
         elif path == "/api/interpret":
             self._handle_interpret()
         elif path == "/api/config":
@@ -468,6 +500,34 @@ class Handler(BaseHTTPRequestHandler):
         rid = datetime.now().strftime("%Y%m%d%H%M%S") + "-%04d" % random.randint(0, 9999)
         reading = {"id": rid, "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                    "question": question, "pan": pan, "interpretations": []}
+        with _LOCK:
+            readings = load_readings()
+            readings.insert(0, reading)
+            save_readings(readings)
+        self._send_json({"reading": reading})
+
+    def _handle_bazi(self):
+        body = self._read_json()
+        chart = body.get("chart") or {}
+        if chart.get("mode") != "bazi" or not chart.get("bazi_text"):
+            self._send_json({"error": "八字排盘数据不合法"}, 400)
+            return
+        birth = (body.get("birth") or "").strip()
+        try:
+            datetime.strptime(birth, "%Y-%m-%d %H:%M")
+        except ValueError:
+            self._send_json({"error": "出生时间格式应为 YYYY-MM-DD HH:MM"}, 400)
+            return
+        rid = datetime.now().strftime("%Y%m%d%H%M%S") + "-%04d" % random.randint(0, 9999)
+        reading = {
+            "id": rid, "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": "bazi",
+            "name": (body.get("name") or "命主").strip()[:20],
+            "gender": "女" if body.get("gender") == "女" else "男",
+            "birth": birth,
+            "question": (body.get("question") or "").strip()[:200],
+            "pan": chart, "interpretations": [],
+        }
         with _LOCK:
             readings = load_readings()
             readings.insert(0, reading)
