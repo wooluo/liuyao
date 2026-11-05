@@ -13,10 +13,14 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- 状态栏区域（时钟/电量/挖孔）与 App 底色一致，图标用深色，避免白底白字 -->
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
+        <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>
