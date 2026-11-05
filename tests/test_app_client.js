@@ -93,4 +93,33 @@ const LY = sandbox.__liuyao || sandbox.window.__liuyao;
   const list2 = await LY.clientApi("/api/readings");
   assert.ok(!list2.readings.some((r) => r.id === reading.id));
   console.log("✓ 删除 OK —— 离线模式全部通过");
+
+  // 5) 模拟安卓（Capacitor 原生环境）：即使 /api/config 返回 200 HTML 也必须判为离线
+  const mem2 = new Map();
+  const sandbox2 = {
+    console, setTimeout, clearTimeout,
+    performance: { now: () => Date.now() },
+    fetch: async () => ({ ok: true, status: 200,
+      headers: { get: () => "text/html" },
+      json: async () => { throw new Error("html"); } }),
+    URLSearchParams, URL, TextDecoder, AbortController,
+    navigator: {}, location: { hash: "#/cast" },
+    localStorage: { getItem: (k) => (mem2.has(k) ? mem2.get(k) : null),
+      setItem: (k, v) => mem2.set(k, String(v)), removeItem: (k) => mem2.delete(k) },
+    document: magic, confirm: () => true, alert: () => {},
+    addEventListener: () => {}, scrollTo: () => {},
+    Capacitor: { isNativePlatform: () => true, Plugins: {} }
+  };
+  sandbox2.window = sandbox2; sandbox2.globalThis = sandbox2;
+  vm.createContext(sandbox2);
+  vm.runInContext(fs.readFileSync(path.join(root, "static", "engine.js"), "utf8"), sandbox2);
+  vm.runInContext(fs.readFileSync(path.join(root, "static", "app.js"), "utf8"), sandbox2);
+  await new Promise((r) => setTimeout(r, 100));
+  const LY2 = sandbox2.__liuyao;
+  assert.strictEqual(LY2.mode, "client", "原生环境必须强制离线模式");
+  const cast2 = await LY2.clientApi("/api/cast", { method: "POST",
+    body: { question: "手机测试", throws: [["背", "字", "字"], ["背", "背", "字"], ["字", "字", "字"],
+      ["背", "字", "字"], ["背", "背", "背"], ["字", "字", "字"]] } });
+  assert.ok(cast2.reading && cast2.reading.id, "排盘必须返回带 id 的 reading");
+  console.log("✓ 原生环境强制离线模式 OK（回归：200 HTML 不再误判为服务器）");
 })().catch((e) => { console.error("FAIL:", e); process.exit(1); });

@@ -26,8 +26,10 @@ async function api(path, opts = {}) {
   const init = { method: opts.method || "GET", headers: { "Content-Type": "application/json" } };
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
   const res = await fetch(path, init);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+  const data = await res.json().catch(() => null);
+  if (!res.ok || data === null || typeof data !== "object") {
+    throw new Error((data && data.error) || "HTTP " + res.status);
+  }
   return data;
 }
 
@@ -66,12 +68,19 @@ function applyConfigPatch(cfg, body) {
 }
 
 async function detectMode() {
+  // 安卓/原生环境：必定离线模式（App 内置排盘引擎与直连能力，不依赖本机服务）
+  const cap = typeof window !== "undefined" && window.Capacitor;
+  if (cap && cap.isNativePlatform && cap.isNativePlatform()) { MODE = "client"; return; }
   try {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 1500);
     const res = await fetch("/api/config", { signal: ctl.signal });
     clearTimeout(t);
-    if (res.ok) { MODE = "server"; return; }
+    const ct = res.headers.get("content-type") || "";
+    if (res.ok && ct.indexOf("json") >= 0) {
+      const data = await res.json().catch(() => null);
+      if (data && data.providers) { MODE = "server"; return; }
+    }
   } catch (e) { /* 无服务器 */ }
   MODE = "client";
 }
