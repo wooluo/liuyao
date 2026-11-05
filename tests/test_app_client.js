@@ -96,6 +96,10 @@ const LY = sandbox.__liuyao || sandbox.window.__liuyao;
 
   // 5) 模拟安卓（Capacitor 原生环境）：即使 /api/config 返回 200 HTML 也必须判为离线
   const mem2 = new Map();
+  const appEl = { innerHTML: "", addEventListener: () => {} }; // 记录渲染结果
+  const unhandled = [];
+  const onUnhandled = (e) => unhandled.push(e);
+  process.on("unhandledRejection", onUnhandled);
   const sandbox2 = {
     console, setTimeout, clearTimeout,
     performance: { now: () => Date.now() },
@@ -103,10 +107,16 @@ const LY = sandbox.__liuyao || sandbox.window.__liuyao;
       headers: { get: () => "text/html" },
       json: async () => { throw new Error("html"); } }),
     URLSearchParams, URL, TextDecoder, AbortController,
-    navigator: {}, location: { hash: "#/cast" },
+    navigator: {}, location: { hash: "#/settings" },
     localStorage: { getItem: (k) => (mem2.has(k) ? mem2.get(k) : null),
       setItem: (k, v) => mem2.set(k, String(v)), removeItem: (k) => mem2.delete(k) },
-    document: magic, confirm: () => true, alert: () => {},
+    document: new Proxy({}, {
+      get(t, p) {
+        if (p === "getElementById") return (id) => (id === "app" ? appEl : magic);
+        return magic;
+      }
+    }),
+    confirm: () => true, alert: () => {},
     addEventListener: () => {}, scrollTo: () => {},
     Capacitor: { isNativePlatform: () => true, Plugins: {} }
   };
@@ -114,12 +124,20 @@ const LY = sandbox.__liuyao || sandbox.window.__liuyao;
   vm.createContext(sandbox2);
   vm.runInContext(fs.readFileSync(path.join(root, "static", "engine.js"), "utf8"), sandbox2);
   vm.runInContext(fs.readFileSync(path.join(root, "static", "app.js"), "utf8"), sandbox2);
-  await new Promise((r) => setTimeout(r, 100));
+  await new Promise((r) => setTimeout(r, 150));
   const LY2 = sandbox2.__liuyao;
   assert.strictEqual(LY2.mode, "client", "原生环境必须强制离线模式");
+  // 设置页（#/settings）在手机环境下必须完整渲染且无异常
+  assert.ok(/解读服务/.test(appEl.innerHTML), "设置页应渲染「解读服务」区块");
+  assert.ok(/LM Studio/.test(appEl.innerHTML), "设置页应渲染 LM Studio 卡片");
+  assert.ok(/GLM/.test(appEl.innerHTML), "设置页应渲染 GLM 卡片");
+  assert.ok(/离线模式/.test(appEl.innerHTML), "设置页应显示离线模式标识");
+  assert.strictEqual(unhandled.length, 0, "渲染过程不应有未捕获异常：" + (unhandled[0] && unhandled[0].message));
+  process.off("unhandledRejection", onUnhandled);
   const cast2 = await LY2.clientApi("/api/cast", { method: "POST",
     body: { question: "手机测试", throws: [["背", "字", "字"], ["背", "背", "字"], ["字", "字", "字"],
       ["背", "字", "字"], ["背", "背", "背"], ["字", "字", "字"]] } });
   assert.ok(cast2.reading && cast2.reading.id, "排盘必须返回带 id 的 reading");
   console.log("✓ 原生环境强制离线模式 OK（回归：200 HTML 不再误判为服务器）");
+  console.log("✓ 手机环境设置页渲染 OK（含 LM Studio/GLM 卡片、无未捕获异常）");
 })().catch((e) => { console.error("FAIL:", e); process.exit(1); });
