@@ -39,36 +39,24 @@ python3 app.py --host 0.0.0.0
 
 ## 配置 AI 服务（设置页）
 
-| 服务 | Base URL | 模型 | 认证 |
-|---|---|---|---|
-| LM Studio 本地 | `http://localhost:1234/v1` | 留空自动获取 | 无需 |
-| GLM 智谱（Coding Plan） | `https://open.bigmodel.cn/api/coding/paas/v4` | `glm-5.3` | API Key（[open.bigmodel.cn](https://open.bigmodel.cn) 控制台，**须用开通了 Coding Plan 的账号创建**） |
+**GLM 智谱（Coding Plan）**（正式版唯一内置服务；其他 OpenAI/Anthropic 兼容端点可经配置文件扩展）：
 
-- 两者均为 OpenAI 兼容协议；协议也可切到 Anthropic 兼容（`https://open.bigmodel.cn/api/anthropic`）。
-- LM Studio：启动应用 → Developer → Server → 开启（默认端口 1234），并加载一个模型；手机连电脑同一 Wi-Fi 时地址写 `http://电脑IP:1234/v1`。
-- 提示 `429 1113 余额不足`：说明 Key 对应账号没有 Coding Plan 额度——请确认 Key 是用**开了 Coding Plan 的那个账号**在控制台新建的。
-- API Key 只保存在本机（服务模式在 `data/config.json`，App 模式在本机 localStorage），请求直连对应服务，不经第三方。
+- Base URL `https://open.bigmodel.cn/api/coding/paas/v4`，模型 `glm-5.3`，建议开启「快速模式」（关闭深度思考）
+- API Key 须用**开通了 Coding Plan 的账号**创建「Coding Plan 类型」密钥；个人类型 Key 会报 `429 1113 余额不足`
+- 提示 429 时先确认：账号 → Coding Plan 订阅 → API 密钥三者是同一账号下的
+- API Key 只保存在本机（服务模式在 `data/config.json`，App 模式在本机 localStorage），请求直连对应服务，不经第三方
 
-## 安卓 App
+## 安卓 App（正式版 v1.0.0）
 
-同一套前端（`static/`）通过 [Capacitor](https://capacitorjs.com) 打包为安卓 App：**App 内置 JS 排盘引擎（离线装卦）、直连 AI、卦例存本机**，无需运行 Python 服务。
+同一套前端（`static/`）通过 [Capacitor](https://capacitorjs.com) 打包为安卓 App：**App 内置 JS 排盘引擎（离线装卦）、直连 AI、卦例存本机**，无需运行 Python 服务。含自研原生 SSE 插件（解卦流式逐字输出）。
 
 ```bash
-cd mobile
-npm install          # 首次
-npm run build        # 同步 static → www 并构建 debug APK
-# 产物：mobile/android/app/build/outputs/apk/debug/app-debug.apk
+cd mobile && ./build.sh
+# 产物：六爻金钱卦.apk（正式签名版）、六爻金钱卦-debug.apk（调试版）
 ```
 
-首次构建需要 JDK 17 与 Android SDK（脚本使用的工具链放在 `tools/`，见 `.gitignore`）。构建环境：
-
-```bash
-export JAVA_HOME=$PWD/../tools/amazon-corretto-17.jdk/Contents/Home   # 示例
-export ANDROID_HOME=$PWD/../tools/android-sdk
-```
-
-- App 内 LM Studio 地址填电脑的局域网 IP（如 `http://192.168.1.10:1234/v1`）；GLM 填 Key 即可（云端直连）。
-- App 内解卦为整段返回（原生 HTTP 直连，无 CORS 限制）；网页连本机服务时为流式输出。
+- 正式版签名密钥在 `mobile/liuyao-release.jks` + `mobile/keystore.properties`（均不入库，**务必备份**，丢失后无法对已装用户发布升级）。
+- 权限仅 INTERNET 一项；`allowBackup=false`；适配摄像头挖孔（edge-to-edge 边距 + 状态栏深色图标）。
 
 ## 项目结构
 

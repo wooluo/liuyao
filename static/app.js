@@ -43,15 +43,30 @@ function lsSet(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
 
 function defaultConfig() {
   return {
-    mode: "six", provider: "lmstudio",
+    mode: "six", provider: "glm",
     providers: {
-      lmstudio: { label: "LM Studio（本地）", protocol: "openai", base: "http://localhost:1234/v1", model: "", api_key: "" },
-      glm: { label: "GLM 智谱（Coding Plan）", protocol: "openai", base: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5.3", api_key: "" }
+      glm: { label: "GLM 智谱（Coding Plan）", protocol: "openai", base: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5.3", api_key: "", fast: true }
     }
   };
 }
 
-function clientRawConfig() { return lsGet("liuyao.config", null) || defaultConfig(); }
+function clientRawConfig() {
+  const stored = lsGet("liuyao.config", null);
+  if (!stored) return defaultConfig();
+  // 正式版迁移：移除测试用的 LM Studio 配置
+  if (stored.providers && stored.providers.lmstudio) {
+    delete stored.providers.lmstudio;
+    if (stored.provider === "lmstudio") stored.provider = "glm";
+    lsSet("liuyao.config", stored);
+  }
+  const base = defaultConfig();
+  stored.mode = stored.mode || base.mode;
+  Object.keys(base.providers).forEach((pid) => {
+    if (!stored.providers[pid]) stored.providers[pid] = base.providers[pid];
+  });
+  if (!stored.providers[stored.provider]) stored.provider = base.provider;
+  return stored;
+}
 
 function applyConfigPatch(cfg, body) {
   if (body.mode === "six" || body.mode === "three") cfg.mode = body.mode;
@@ -874,11 +889,9 @@ function hintFor(msg, pid) {
   if (/401|403|api.?key|unauthorized/i.test(msg)) {
     out += "\n提示：请到「设置」检查 API Key 是否正确保存。";
   } else if (/429|1113|余额|资源包|quota|rate.?limit/i.test(msg)) {
-    out += "\n提示：账户额度不足或并发超限——请到 open.bigmodel.cn 控制台查看 Coding Plan 状态/余额，或先切换到 LM Studio 本地模型（免费）。";
+    out += "\n提示：账户额度不足——Coding Plan 需用开通订阅的账号创建「Coding Plan 类型」密钥；个人 Key 会报余额不足。";
   } else if (/404|model/i.test(msg)) {
-    out += "\n提示：请到「设置」核对模型名称，或点「获取模型列表」选择。";
-  } else if (pid === "lmstudio") {
-    out += "\n提示：请确认 LM Studio 已启动，并在 Developer → Server 里开启本地服务（默认端口 1234）。";
+    out += "\n提示：请到「设置」核对模型名称。";
   }
   return out;
 }
@@ -997,7 +1010,7 @@ async function renderSettings() {
             </div>
           </div>
           <label class="field">模型名</label>
-          <input type="text" data-f="model" value="${esc(p.model)}" list="models-${pid}" placeholder="${pid === "lmstudio" ? "留空自动取第一个可用模型" : "如 glm-5.3"}">
+          <input type="text" data-f="model" value="${esc(p.model)}" list="models-${pid}" placeholder="如 glm-5.3">
           <datalist id="models-${pid}"></datalist>
           <label class="chk-line"><input type="checkbox" data-f="fast" ${p.fast ? "checked" : ""}> 快速模式（关闭深度思考，GLM 出结果更快）</label>
           <div class="btn-row">
@@ -1014,10 +1027,9 @@ async function renderSettings() {
       <h2>说明</h2>
       <div class="hint">
         · 当前运行：<b>${MODE === "server" ? "服务器模式（连本机服务，流式输出）" : "离线模式（App 内排盘，直连 AI）"}</b><br>
-        · <b>LM Studio</b>：启动应用后在 Developer → Server 打开本地服务（默认 <code>http://localhost:1234/v1</code>），模型名可留空自动获取。手机连电脑同一 Wi-Fi 时，把地址改成 <code>http://电脑IP:1234/v1</code>。<br>
-        · <b>GLM 智谱</b>：到 open.bigmodel.cn 控制台获取 API Key；OpenAI 兼容地址 <code>https://open.bigmodel.cn/api/coding/paas/v4</code>，模型如 <code>glm-5.3</code>；Coding Plan 用户也可把协议切到 Anthropic 兼容（地址 <code>https://open.bigmodel.cn/api/anthropic</code>）。<br>
-        · API Key 只保存在本机 <code>data/config.json</code>，请求由本服务转发，不经第三方。<br>
-        · 手机使用：<code>python3 app.py --host 0.0.0.0</code> 后，同一 Wi-Fi 下访问本机 IP。
+        · <b>GLM 智谱（Coding Plan）</b>：到 open.bigmodel.cn 用<b>开通了 Coding Plan 的账号</b>创建「Coding Plan 类型」API Key 粘贴到上方；个人类型 Key 会报 429 余额不足。模型默认 glm-5.3，建议保持开启「快速模式」。<br>
+        · API Key 只保存在本机（App 为浏览器本地存储，服务模式在 <code>data/config.json</code>），请求直连对应服务，不经第三方。<br>
+        · 网页版手机使用：<code>python3 app.py --host 0.0.0.0</code> 后，同一 Wi-Fi 下访问本机 IP。
       </div>
     </div>
   </section>`;

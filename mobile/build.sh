@@ -26,6 +26,12 @@ npx cap sync android
 # 3) 清理可能携带旧 JDK 的 Gradle daemon，强制本次构建的 JVM 与 JAVA_HOME 一致
 (cd android && ./gradlew --stop > /dev/null 2>&1 || true)
 (cd android && ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" assembleDebug)
-
 cp android/app/build/outputs/apk/debug/app-debug.apk ./六爻金钱卦-debug.apk
-echo "✓ 构建完成：$(pwd)/六爻金钱卦-debug.apk"
+
+# 4) 正式签名版（keystore.properties 存在时）
+if [ -f keystore.properties ]; then
+  (cd android && ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" assembleRelease)
+  cp android/app/build/outputs/apk/release/app-release.apk ./六爻金钱卦.apk
+  echo "✓ 正式版：$(pwd)/六爻金钱卦.apk"
+fi
+echo "✓ 调试版：$(pwd)/六爻金钱卦-debug.apk"

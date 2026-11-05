@@ -39,12 +39,8 @@ MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=ut
 
 DEFAULT_CONFIG = {
     "mode": "six",  # six=标准六爻(摇六次) | three=简化三爻(摇三次)
-    "provider": "lmstudio",
+    "provider": "glm",
     "providers": {
-        "lmstudio": {
-            "label": "LM Studio（本地）", "protocol": "openai",
-            "base": "http://localhost:1234/v1", "model": "", "api_key": "",
-        },
         "glm": {
             "label": "GLM 智谱（Coding Plan）", "protocol": "openai",
             "base": "https://open.bigmodel.cn/api/coding/paas/v4", "model": "glm-5.3", "api_key": "",
@@ -116,7 +112,7 @@ def load_config():
                 "base": p.get("base") or "", "model": p.get("model") or "",
                 "api_key": p.get("api_key") or ""}
     if out["provider"] not in out["providers"]:
-        out["provider"] = "lmstudio"
+        out["provider"] = "glm"
     return out
 
 
@@ -510,8 +506,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "上游返回 HTTP %d：%s" % (e.code, detail)}, 502)
             return
         except Exception as e:
-            hint = "（若为本地服务，请确认已启动，如 LM Studio 的 Developer/Server）"
-            self._send_json({"error": "无法连接 %s：%s %s" % (pcfg.get("label", pid), e, hint)}, 502)
+            self._send_json({"error": "无法连接 %s：%s（请检查网络与接口地址）"
+                                      % (pcfg.get("label", pid), e)}, 502)
             return
 
         # 上游 OK：开始向浏览器流式转发（HTTP/1.0 风格：无 Content-Length，关连接即结束）

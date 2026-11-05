@@ -1,5 +1,5 @@
 /* 离线（client）模式自动化测试：在 Node 中加载 app.js（带极简 DOM 桩），
- * 验证 本地排盘 / 历史 / 配置存储 / 直连 LM Studio 真模型解卦。
+ * 验证 本地排盘 / 历史 / 配置存储 / 直连真模型解卦（GLM 配置指向本机端点仅作测试）。
  * 运行：node tests/test_app_client.js [--no-llm] */
 "use strict";
 const fs = require("fs");
@@ -72,19 +72,21 @@ const LY = sandbox.__liuyao || sandbox.window.__liuyao;
   assert.strictEqual(raw.providers.glm.api_key, "TESTKEY123", "空 Key 不应覆盖已存 Key");
   console.log("✓ 离线配置 OK（Key 持久化且读取时脱敏）");
 
-  // 4) 直连 LM Studio 真模型解卦（--no-llm 跳过）
+  // 4) 直连本地真模型解卦（--no-llm 跳过；GLM 指向本机 LM Studio 端点仅作测试用途）
   if (!process.argv.includes("--no-llm")) {
     try {
-      const text = await LY.clientInterpret(one.reading, "lmstudio");
+      await LY.clientApi("/api/config", { method: "POST", body: { providers:
+        { glm: { base: "http://127.0.0.1:1234/v1", model: "" } } } });
+      const text = await LY.clientInterpret(one.reading, "glm");
       assert.ok(text.length > 50, "解卦文本过短");
       const after = await LY.clientApi("/api/readings/" + reading.id);
       assert.strictEqual(after.reading.interpretations.length, 1);
       assert.ok(after.reading.interpretations[0].text.length > 50);
-      console.log("✓ 直连 LM Studio 解卦 OK（%d 字，模型 %s）",
+      console.log("✓ 直连本地真模型解卦 OK（%d 字，模型 %s）",
         after.reading.interpretations[0].text.length, after.reading.interpretations[0].model);
     } catch (e) {
       if (/fetch failed|ECONNREFUSED|获取模型列表/i.test(String(e))) {
-        console.log("ⓘ LM Studio 未运行，跳过 LLM 实测：", String(e).slice(0, 80));
+        console.log("ⓘ 本机无 LLM 服务，跳过 LLM 实测：", String(e).slice(0, 80));
       } else throw e;
     }
   }
@@ -129,8 +131,8 @@ const LY = sandbox.__liuyao || sandbox.window.__liuyao;
   assert.strictEqual(LY2.mode, "client", "原生环境必须强制离线模式");
   // 设置页（#/settings）在手机环境下必须完整渲染且无异常
   assert.ok(/解读服务/.test(appEl.innerHTML), "设置页应渲染「解读服务」区块");
-  assert.ok(/LM Studio/.test(appEl.innerHTML), "设置页应渲染 LM Studio 卡片");
   assert.ok(/GLM/.test(appEl.innerHTML), "设置页应渲染 GLM 卡片");
+  assert.ok(!/LM Studio/.test(appEl.innerHTML), "正式版设置页不应再出现 LM Studio");
   assert.ok(/离线模式/.test(appEl.innerHTML), "设置页应显示离线模式标识");
   assert.strictEqual(unhandled.length, 0, "渲染过程不应有未捕获异常：" + (unhandled[0] && unhandled[0].message));
   process.off("unhandledRejection", onUnhandled);

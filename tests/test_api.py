@@ -59,9 +59,9 @@ class TestAPI(unittest.TestCase):
         stub_port = cls.stub.server_address[1]
 
         cfg = json.loads(json.dumps(appmod.DEFAULT_CONFIG))
-        cfg["provider"] = "lmstudio"
-        cfg["providers"]["lmstudio"]["base"] = "http://127.0.0.1:%d/v1" % stub_port
-        cfg["providers"]["lmstudio"]["model"] = ""  # 留空 → 从 /models 自动取第一个
+        cfg["provider"] = "glm"
+        cfg["providers"]["glm"]["base"] = "http://127.0.0.1:%d/v1" % stub_port
+        cfg["providers"]["glm"]["model"] = ""  # 留空 → 从 /models 自动取第一个
         appmod.save_config(cfg)
 
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), appmod.Handler)
@@ -105,12 +105,12 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(pan["bian"]["name"], "泽水困")
 
     def test_03_models(self):
-        out = json.loads(self.request("GET", "/api/models?provider=lmstudio"))
+        out = json.loads(self.request("GET", "/api/models?provider=glm"))
         self.assertEqual(out["models"][0], "stub-model")
 
     def test_04_interpret_stream_and_save(self):
         raw = self.request("POST", "/api/interpret",
-                           {"id": TestAPI.rid, "provider": "lmstudio"})
+                           {"id": TestAPI.rid, "provider": "glm"})
         self.assertEqual(raw, "## 卦象总览\n测试解卦文本。")
         body = StubLLM.last_request
         self.assertEqual(body["model"], "stub-model")
