@@ -64,6 +64,7 @@ function applyConfigPatch(cfg, body) {
     });
     if (p.protocol !== "openai" && p.protocol !== "anthropic") tgt.protocol = "openai";
     if (typeof p.api_key === "string" && p.api_key.trim()) tgt.api_key = p.api_key.trim();
+    if (typeof p.fast === "boolean") tgt.fast = p.fast;
   });
 }
 
@@ -233,22 +234,25 @@ async function resolveClientModel(pcfg) {
 function clientRequestBody(pcfg, model, reading, stream) {
   const msgs = LiuYao.buildMessages(reading);
   const base = (pcfg.base || "").replace(/\/+$/, "");
+  let url, headers, payload;
   if (pcfg.protocol === "anthropic") {
-    const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
+    url = base + "/v1/messages";
+    headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
     if (pcfg.api_key) { headers["x-api-key"] = pcfg.api_key; headers.Authorization = "Bearer " + pcfg.api_key; }
-    return {
-      url: base + "/v1/messages", headers,
-      payload: { model, max_tokens: 4096, temperature: 0.7, stream: !!stream, system: msgs.system,
-                 messages: [{ role: "user", content: msgs.user }] }
-    };
+    payload = { model, max_tokens: 4096, temperature: 0.7, stream: !!stream, system: msgs.system,
+                messages: [{ role: "user", content: msgs.user }] };
+  } else {
+    url = base + "/chat/completions";
+    headers = { "Content-Type": "application/json" };
+    if (pcfg.api_key) headers.Authorization = "Bearer " + pcfg.api_key;
+    payload = { model, temperature: 0.7, stream: !!stream,
+                messages: [{ role: "system", content: msgs.system }, { role: "user", content: msgs.user }] };
   }
-  const headers = { "Content-Type": "application/json" };
-  if (pcfg.api_key) headers.Authorization = "Bearer " + pcfg.api_key;
-  return {
-    url: base + "/chat/completions", headers,
-    payload: { model, temperature: 0.7, stream: !!stream,
-               messages: [{ role: "system", content: msgs.system }, { role: "user", content: msgs.user }] }
-  };
+  // 快速模式：智谱系端点关闭深度思考，显著缩短等待
+  if (pcfg.fast && /bigmodel|z\.ai/i.test(pcfg.base || "")) {
+    payload.thinking = { type: "disabled" };
+  }
+  return { url, headers, payload };
 }
 
 function saveClientInterpretation(reading, pid, label, model, text) {
@@ -293,7 +297,7 @@ function clientInterpretStream(reading, pid, onDelta) {
       if (!model) { reject(new Error("未配置模型名，且无法从服务获取模型列表。请在设置里填写模型。")); return; }
       const req = clientRequestBody(pcfg, model, reading, true);
       const id = "s" + Date.now() + "-" + Math.floor(Math.random() * 1000);
-      let acc = "", finished = false;
+      let acc = "", reason = "", finished = false;
       const handles = [];
       const cleanup = () => { handles.forEach((h) => { try { h.remove && h.remove(); } catch (e) {} }); };
       const finish = (err) => {
@@ -312,10 +316,21 @@ function clientInterpretStream(reading, pid, onDelta) {
           if (e.id !== id || !e.payload || e.payload === "[DONE]") return;
           let obj;
           try { obj = JSON.parse(e.payload); } catch (err) { return; }
-          let t = "";
-          if (obj.choices && obj.choices[0]) t = ((obj.choices[0].delta) || {}).content || "";
-          else if (obj.type === "content_block_delta") t = (obj.delta || {}).text || "";
-          if (t) { acc += t; onDelta(acc); }
+          let t = "", r = "";
+          if (obj.choices && obj.choices[0]) {
+            const d = (obj.choices[0].delta) || {};
+            t = d.content || "";
+            r = d.reasoning_content || d.reasoning || "";
+          } else if (obj.type === "content_block_delta") {
+            t = (obj.delta || {}).text || "";
+          } else if (obj.type === "thinking_delta") {
+            r = (obj.delta || {}).thinking || "";
+          }
+          if (t || r) {
+            if (t) acc += t;
+            if (r) reason += r;
+            onDelta({ content: acc, reason });
+          }
         }));
         handles.push(await plugin.addListener("stream-http-end", (e) => { if (e.id === id) finish(); }));
         handles.push(await plugin.addListener("stream-http-error", (e) => {
@@ -453,7 +468,7 @@ async function renderCast() {
       <input type="text" id="q" maxlength="60" placeholder="例：这个月跳槽去新公司，是否合适？">
       <label class="field">卦式</label>
       <div class="mode-row">
-        <span class="chip" id="mode-six">六爻 · 摇六次（标准排盘）</span>
+        <span class="chip" id="mode-six">六爻 · 摇六次（标准）</span>
         <span class="chip" id="mode-three">三爻 · 摇三次（简化）</span>
       </div>
       <div class="hint">硬币约定：<b>花 / 国徽面 = 背</b>，面值数字面 = 字。<br>
@@ -498,7 +513,7 @@ function updateCastUI() {
   if (done) {
     sc.innerHTML = `
       <h2>卦成</h2>
-      <div class="throw-preview"><span class="mov">六爻已定</span>${cast.mode === "six" ? "，可以成卦排盘" : ""}</div>
+      <div class="throw-preview"><span class="mov">${N === 6 ? "六爻已定" : "三爻已定"}</span>，可以成卦排盘</div>
       <div class="btn-row">
         <button class="btn primary big" id="do-cast">成卦排盘 →</button>
         <button class="btn ghost" id="redo-all">重新摇</button>
@@ -512,14 +527,17 @@ function updateCastUI() {
       <h2>掷币 <span class="sub">第 ${i + 1} / ${N} 次</span></h2>
       <div class="step-head">
         <span class="step-title">记录 <b>${names[i]}</b></span>
-        <span class="step-progress">已记 ${i} / ${N} 爻</span>
+        <span class="step-progress">第 ${i + 1} / ${N} 次</span>
       </div>
       <div class="coins">
         ${[0, 1, 2].map((k) => `
-          <div class="coin-pair">
-            <button class="coin-btn ${cast.coins[k] === "字" ? "sel-zi" : ""}" data-k="${k}" data-side="字">字</button>
-            <button class="coin-btn ${cast.coins[k] === "背" ? "sel-bei" : ""}" data-k="${k}" data-side="背">背</button>
-            <span class="coin-idx">第${k + 1}枚</span>
+          <div class="coin-row">
+            <span class="coin-label">第${k + 1}枚</span>
+            <div class="coin-pair">
+              <button class="coin-btn ${cast.coins[k] === "字" ? "sel-zi" : ""}" data-k="${k}" data-side="字">字</button>
+              <button class="coin-btn ${cast.coins[k] === "背" ? "sel-bei" : ""}" data-k="${k}" data-side="背">背</button>
+            </div>
+            <span class="coin-state">${cast.coins[k] === "背" ? "背 · 花/国徽面" : cast.coins[k] === "字" ? "字 · 面值面" : "未选"}</span>
           </div>`).join("")}
       </div>
       <div class="throw-preview" id="throw-preview">${
@@ -593,9 +611,9 @@ function yaoRowHtml(ln, bianLn) {
     <span class="god">${esc(ln.liushen)}</span>
     <span class="post">${esc(ln.label)}</span>
     <span class="yao-line">${lineSymHtml(ln.value)}</span>
-    <span class="yao-gz">${esc(ln.ganzhi)}${esc(ln.element)}<span class="lq">${esc(ln.liuqin)}</span>
+    <span class="yao-gz">${esc(ln.ganzhi)}<span class="e-${esc(ln.element)}">${esc(ln.element)}</span><span class="lq">${esc(ln.liuqin)}</span>
       ${marks ? `<span class="sy">${marks}</span>` : ""}
-      ${ln.fu ? `<span class="fu">伏 ${esc(ln.fu.ganzhi)}${esc(ln.fu.element)}${esc(ln.fu.liuqin)}</span>` : ""}
+      ${ln.fu ? `<span class="fu">伏 ${esc(ln.fu.ganzhi)}<span class="e-${esc(ln.fu.element)}">${esc(ln.fu.element)}</span>${esc(ln.fu.liuqin)}</span>` : ""}
     </span>
   </div>`;
 }
@@ -617,8 +635,10 @@ async function renderReading(id) {
   if (z.month_branch) chips.push(`<span class="tag">${esc(z.month_branch)}月 · ${esc(z.month_term)}后</span>`);
   chips.push(`<span class="tag">旬空 ${esc((z.xunkong || []).join(""))}</span>`);
   if (z.yuepo) chips.push(`<span class="tag red">月破 ${esc(z.yuepo)}</span>`);
-  chips.push(`<span class="tag">${esc(pan.datetime)} ${esc(z.weekday)}</span>`);
-  chips.push(`<span class="tag">${pan.mode === "six" ? "六爻卦" : "三爻卦"}</span>`);
+  const metaChips = [
+    `<span class="tag meta">${esc(pan.datetime)} ${esc(z.weekday)}</span>`,
+    `<span class="tag meta">${pan.mode === "six" ? "六爻卦" : "三爻卦"}</span>`,
+  ];
 
   let panHtml = "";
   if (pan.mode === "six") {
@@ -627,11 +647,11 @@ async function renderReading(id) {
     let right = "";
     if (bian) {
       right = `<div>
-        <h4>变卦 · ${esc(bian.name)}</h4>
-        <div class="mini-row">${esc(bian.palace)}宫${esc(bian.gen_label)} · 属${esc(bian.palace_element)}</div>
+        <h4>变卦 · ${esc(bian.name)}<span class="gong">${esc(bian.palace)}宫${esc(bian.gen_label)} · 属${esc(bian.palace_element)}</span></h4>
         ${pan.moving.map((p) => {
           const bl = bian.lines[p - 1];
-          return `<div class="mini-row">${esc(b.lines[p - 1].label)} ⇒ <span class="to">${esc(bl.ganzhi)}${esc(bl.element)}${esc(bl.liuqin)}</span></div>`;
+          const mk = b.lines[p - 1].value === 9 ? " ○" : " ✕";
+          return `<div class="mini-row"><span>${esc(b.lines[p - 1].label)}${mk}</span><span class="to">⇒ ${esc(bl.ganzhi)}<span class="e-${esc(bl.element)}">${esc(bl.element)}</span>${esc(bl.liuqin)}</span></div>`;
         }).join("")}
       </div>`;
     } else {
@@ -650,7 +670,7 @@ async function renderReading(id) {
         </div>
         <div class="right">${right}</div>
       </div>
-      <div class="sizhi-chips">${pan.moving.length ? `<span class="tag red">动爻：${movingLabels.join("、")}</span>` : '<span class="tag">六爻安静</span>'}</div>`;
+      <div class="sizhi-chips" style="margin-top:10px">${pan.moving.length ? `<span class="tag red">动爻：${movingLabels.join("、")}</span>` : '<span class="tag">六爻安静</span>'}</div>`;
   } else {
     const t = pan.tri, bian = pan.bian;
     panHtml = `
@@ -693,7 +713,8 @@ async function renderReading(id) {
     <div class="card">
       <h2>所问之事</h2>
       <div style="font-size:16px;line-height:1.7">${esc(reading.question || "（未注明）")}</div>
-      <div class="sizhi-chips">${chips.join("")}</div>
+      <div class="chip-row">${chips.join("")}</div>
+      <div class="chip-row">${metaChips.join("")}</div>
     </div>
     <div class="card">
       <h2>排盘 <span class="sub">京房纳甲 · 自上而下</span></h2>
@@ -753,19 +774,27 @@ async function startInterp(rid, pid) {
     area.classList.remove("waiting");
     const stream = nativeStreamHttp();
     stopBtn.style.display = stream ? "" : "none";
-    let buf = "", lastPaint = 0;
+    let buf = "", reasonBuf = "", lastPaint = 0;
+    const t0 = Date.now();
     const paint = (final) => {
-      area.innerHTML = md(buf) + (final ? "" : '<span class="cursor">▍</span>');
+      const thinking = !final && !buf;
+      const secs = Math.max(1, Math.round((Date.now() - t0) / 1000));
+      const status = thinking
+        ? '<div class="think-status">🧠 模型思考中 · ' + secs + "s"
+          + (reasonBuf ? " · 已推理 " + reasonBuf.length + " 字" : "")
+          + '<div class="sub2">深度思考模型推理完成后开始输出；想更快可在设置里开启「快速模式」</div></div>'
+        : "";
+      area.innerHTML = status + md(buf) + (final ? "" : '<span class="cursor">▍</span>');
     };
-    area.innerHTML = stream
-      ? '<span class="cursor">▍</span>'
-      : '<span class="cursor">▍</span> 正在解读（直连 AI，生成完整体显示）…';
+    const tick = stream ? setInterval(() => { if (!buf) paint(false); }, 1000) : null;
+    area.innerHTML = stream ? "" : '<span class="cursor">▍</span> 正在解读（直连 AI，生成完整体显示）…';
     try {
       const { reading } = await api("/api/readings/" + rid);
       let text;
       if (stream) {
-        text = await clientInterpretStream(reading, pid, (acc) => {
-          buf = acc;
+        text = await clientInterpretStream(reading, pid, (st) => {
+          buf = st.content;
+          reasonBuf = st.reason || "";
           const now = performance.now();
           if (now - lastPaint > 120) { lastPaint = now; paint(false); }
         });
@@ -782,6 +811,7 @@ async function startInterp(rid, pid) {
       errBox.innerHTML = esc(hintFor(e.message, pid));
       if (!buf) { area.classList.add("waiting"); area.textContent = "解卦未完成"; }
     } finally {
+      if (tick) clearInterval(tick);
       startBtn.disabled = false;
       stopBtn.style.display = "none";
     }
@@ -969,6 +999,7 @@ async function renderSettings() {
           <label class="field">模型名</label>
           <input type="text" data-f="model" value="${esc(p.model)}" list="models-${pid}" placeholder="${pid === "lmstudio" ? "留空自动取第一个可用模型" : "如 glm-5.3"}">
           <datalist id="models-${pid}"></datalist>
+          <label class="chk-line"><input type="checkbox" data-f="fast" ${p.fast ? "checked" : ""}> 快速模式（关闭深度思考，GLM 出结果更快）</label>
           <div class="btn-row">
             <button class="btn small ghost" data-fetchmodels="${pid}">获取模型列表</button>
             <button class="btn small ghost" data-test="${pid}">测试连接</button>
@@ -1054,8 +1085,13 @@ async function renderSettings() {
     const providers = {};
     $$(".prov-card").forEach((card) => {
       const pid = card.dataset.pid;
-      const get = (f) => { const el = $(`[data-f="${f}"]`, card); return el ? el.value.trim() : ""; };
-      const p = { base: get("base"), protocol: get("protocol"), model: get("model") };
+      const get = (f) => {
+        const el = $(`[data-f="${f}"]`, card);
+        if (!el) return undefined;
+        return el.type === "checkbox" ? el.checked : el.value.trim();
+      };
+      const p = { base: get("base") || "", protocol: get("protocol") || "openai", model: get("model") || "" };
+      if (get("fast") !== undefined) p.fast = get("fast");
       const key = get("api_key");
       if (key) p.api_key = key;
       providers[pid] = p;

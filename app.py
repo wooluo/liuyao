@@ -106,6 +106,8 @@ def load_config():
             for k in ("label", "protocol", "base", "model"):
                 if isinstance(p.get(k), str):
                     out["providers"][pid][k] = p[k]
+            if isinstance(p.get("fast"), bool):
+                out["providers"][pid]["fast"] = p["fast"]
             if isinstance(p.get("api_key"), str) and p["api_key"]:
                 out["providers"][pid]["api_key"] = p["api_key"]
         elif isinstance(p, dict):  # 用户自定义的 provider
@@ -245,6 +247,9 @@ def open_upstream(pcfg, model, system, user):
         payload = {"model": model, "temperature": 0.7, "stream": True,
                    "messages": [{"role": "system", "content": system},
                                 {"role": "user", "content": user}]}
+    # 快速模式：智谱系端点关闭深度思考，显著缩短等待
+    if pcfg.get("fast") and re.search(r"(bigmodel|z\.ai)", base):
+        payload["thinking"] = {"type": "disabled"}
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
                                  headers=headers, method="POST")
     return smart_urlopen(req, timeout=600)
@@ -432,6 +437,8 @@ class Handler(BaseHTTPRequestHandler):
                         tgt[k] = p[k].strip()
                 if p.get("protocol") not in ("openai", "anthropic"):
                     tgt["protocol"] = "openai"
+                if isinstance(p.get("fast"), bool):
+                    tgt["fast"] = p["fast"]
                 key = p.get("api_key")
                 if isinstance(key, str) and key.strip():
                     tgt["api_key"] = key.strip()
