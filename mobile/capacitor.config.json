@@ -1,0 +1,11 @@
+{
+  "appId": "com.wooluo.liuyao",
+  "appName": "六爻金钱卦",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

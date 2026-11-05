@@ -22,12 +22,231 @@ function toast(msg) {
 }
 
 async function api(path, opts = {}) {
+  if (MODE === "client") return clientApi(path, opts);
   const init = { method: opts.method || "GET", headers: { "Content-Type": "application/json" } };
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
   const res = await fetch(path, init);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
   return data;
+}
+
+// ---------------- 服务器探测 / 离线（App）模式 ----------------
+let MODE = "server"; // server = 走本地 Python 服务；client = 离线（APK / 直接打开页面）
+
+function lsGet(k, d) {
+  try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; }
+}
+function lsSet(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+
+function defaultConfig() {
+  return {
+    mode: "six", provider: "lmstudio",
+    providers: {
+      lmstudio: { label: "LM Studio（本地）", protocol: "openai", base: "http://localhost:1234/v1", model: "", api_key: "" },
+      glm: { label: "GLM 智谱（Coding Plan）", protocol: "openai", base: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5.3", api_key: "" }
+    }
+  };
+}
+
+function clientRawConfig() { return lsGet("liuyao.config", null) || defaultConfig(); }
+
+function applyConfigPatch(cfg, body) {
+  if (body.mode === "six" || body.mode === "three") cfg.mode = body.mode;
+  if (body.provider && cfg.providers[body.provider]) cfg.provider = body.provider;
+  Object.entries(body.providers || {}).forEach(([pid, p]) => {
+    if (!p || typeof p !== "object" || !cfg.providers[pid]) return;
+    const tgt = cfg.providers[pid];
+    ["label", "protocol", "base", "model"].forEach((k) => {
+      if (typeof p[k] === "string") tgt[k] = p[k].trim();
+    });
+    if (p.protocol !== "openai" && p.protocol !== "anthropic") tgt.protocol = "openai";
+    if (typeof p.api_key === "string" && p.api_key.trim()) tgt.api_key = p.api_key.trim();
+  });
+}
+
+async function detectMode() {
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 1500);
+    const res = await fetch("/api/config", { signal: ctl.signal });
+    clearTimeout(t);
+    if (res.ok) { MODE = "server"; return; }
+  } catch (e) { /* 无服务器 */ }
+  MODE = "client";
+}
+
+function makeId() {
+  const d = new Date(), p = (n) => (n < 10 ? "0" : "") + n;
+  return "" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds())
+    + "-" + String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+}
+
+function fmtNow() {
+  const d = new Date(), p = (n) => (n < 10 ? "0" : "") + n;
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function readingSummaryClient(r) {
+  const pan = r.pan || {};
+  const ben = pan.mode === "three" ? (pan.tri || {}).name : (pan.ben || {}).name;
+  return {
+    id: r.id, created: r.created || "", question: r.question || "", mode: pan.mode || "six",
+    ben: ben || "?", bian: (pan.bian || {}).name || "",
+    day_ganzhi: (pan.sizhi || {}).day_ganzhi || "",
+    moving_count: (pan.moving || []).length,
+    interpretations: (r.interpretations || []).length
+  };
+}
+
+// ---- 原生 HTTP（Capacitor 内绕过 CORS；浏览器则退回 fetch） ----
+function nativeHttp() {
+  const cap = typeof window !== "undefined" && window.Capacitor;
+  if (cap && cap.Plugins && cap.Plugins.CapacitorHttp && (!cap.isNativePlatform || cap.isNativePlatform())) {
+    return cap.Plugins.CapacitorHttp;
+  }
+  return null;
+}
+
+async function httpJSON(method, url, headers, bodyObj, timeoutMs) {
+  const nh = nativeHttp();
+  if (nh) {
+    const r = await nh.request({ method, url, headers: headers || {}, data: bodyObj });
+    if (r.status >= 400) {
+      throw new Error("HTTP " + r.status + "：" + JSON.stringify(r.data).slice(0, 200));
+    }
+    return { status: r.status, json: r.data };
+  }
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs || 30000);
+  try {
+    const res = await fetch(url, {
+      method, headers,
+      body: bodyObj !== undefined ? JSON.stringify(bodyObj) : undefined,
+      signal: ctl.signal
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      const msg = j && j.error ? (j.error.message || j.error) : JSON.stringify(j).slice(0, 200);
+      throw new Error("HTTP " + res.status + "：" + (msg || ""));
+    }
+    return { status: res.status, json: await res.json().catch(() => ({})) };
+  } finally { clearTimeout(t); }
+}
+
+async function fetchModelsDirect(pcfg) {
+  const base = (pcfg.base || "").replace(/\/+$/, "");
+  if (!base) return [];
+  const url = base + (pcfg.protocol === "anthropic" ? "/v1/models" : "/models");
+  const headers = {};
+  if (pcfg.api_key) { headers.Authorization = "Bearer " + pcfg.api_key; headers["x-api-key"] = pcfg.api_key; }
+  const { json } = await httpJSON("GET", url, headers, undefined, 10000);
+  return (json.data || []).map((m) => m && m.id).filter(Boolean);
+}
+
+const NON_CHAT_MODEL = /embed|rerank|ocr|whisper|speech|tts|stt|audio|clip/i;
+
+async function clientApi(path, opts = {}) {
+  const method = opts.method || "GET";
+  const body = opts.body || {};
+  if (path === "/api/config" && method === "GET") {
+    const cfg = JSON.parse(JSON.stringify(clientRawConfig()));
+    Object.values(cfg.providers).forEach((p) => { p.has_key = !!p.api_key; p.api_key = ""; });
+    return cfg;
+  }
+  if (path === "/api/config" && method === "POST") {
+    const cfg = clientRawConfig();
+    applyConfigPatch(cfg, body);
+    lsSet("liuyao.config", cfg);
+    return { ok: true };
+  }
+  if (path === "/api/cast") {
+    const throws = body.throws;
+    if (!Array.isArray(throws) || ![3, 6].includes(throws.length)) throw new Error("throws 应为 3 或 6 次掷币结果");
+    const mode = throws.length === 3 ? "three" : "six";
+    const pan = mode === "three"
+      ? LiuYao.buildTriPan(throws, LiuYao.nowDT(), LiuYao.localTZ())
+      : LiuYao.buildPan(throws, LiuYao.nowDT(), LiuYao.localTZ());
+    const readings = lsGet("liuyao.readings", []);
+    const reading = {
+      id: makeId(), created: fmtNow(),
+      question: (body.question || "").slice(0, 200),
+      pan, interpretations: []
+    };
+    readings.unshift(reading);
+    lsSet("liuyao.readings", readings);
+    return { reading };
+  }
+  if (path === "/api/readings") {
+    return { readings: lsGet("liuyao.readings", []).map(readingSummaryClient) };
+  }
+  const m = path.match(/^\/api\/readings\/([\w-]+)$/);
+  if (m && method === "GET") {
+    const r = lsGet("liuyao.readings", []).find((x) => x.id === m[1]);
+    if (!r) throw new Error("记录不存在");
+    return { reading: r };
+  }
+  if (m && method === "DELETE") {
+    lsSet("liuyao.readings", lsGet("liuyao.readings", []).filter((x) => x.id !== m[1]));
+    return { ok: true };
+  }
+  if (path.startsWith("/api/models")) {
+    const pid = new URLSearchParams(path.split("?")[1] || "").get("provider") || "";
+    const pcfg = clientRawConfig().providers[pid];
+    if (!pcfg) throw new Error("未知 provider");
+    return { models: await fetchModelsDirect(pcfg) };
+  }
+  throw new Error("离线模式不支持：" + path);
+}
+
+// ---- 离线直连解卦（非流式；Capacitor 原生请求无 CORS 限制） ----
+async function clientInterpret(reading, pid) {
+  const cfg = clientRawConfig();
+  const pcfg = cfg.providers[pid];
+  if (!pcfg) throw new Error("未知 provider：" + pid);
+  let model = (pcfg.model || "").trim();
+  if (!model) {
+    try {
+      const ms = await fetchModelsDirect(pcfg);
+      model = (ms.find((x) => !NON_CHAT_MODEL.test(x)) || ms[0] || "");
+    } catch (e) { /* 用空模型报错 */ }
+  }
+  if (!model) throw new Error("未配置模型名，且无法从服务获取模型列表。请在设置里填写模型。");
+  const msgs = LiuYao.buildMessages(reading);
+  const base = (pcfg.base || "").replace(/\/+$/, "");
+  let url, headers, payload;
+  if (pcfg.protocol === "anthropic") {
+    url = base + "/v1/messages";
+    headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
+    if (pcfg.api_key) { headers["x-api-key"] = pcfg.api_key; headers.Authorization = "Bearer " + pcfg.api_key; }
+    payload = { model, max_tokens: 4096, temperature: 0.7, system: msgs.system,
+                messages: [{ role: "user", content: msgs.user }] };
+  } else {
+    url = base + "/chat/completions";
+    headers = { "Content-Type": "application/json" };
+    if (pcfg.api_key) headers.Authorization = "Bearer " + pcfg.api_key;
+    payload = { model, temperature: 0.7,
+                messages: [{ role: "system", content: msgs.system }, { role: "user", content: msgs.user }] };
+  }
+  const { json } = await httpJSON("POST", url, headers, payload, 300000);
+  let text = "";
+  if (json && Array.isArray(json.choices) && json.choices[0]) {
+    text = (json.choices[0].message || {}).content || "";
+  } else if (json && Array.isArray(json.content)) {
+    text = json.content.map((b) => (b && b.text) || "").join("");
+  }
+  if (!text) throw new Error("模型未返回内容：" + JSON.stringify(json).slice(0, 160));
+  const readings = lsGet("liuyao.readings", []);
+  const target = readings.find((x) => x.id === reading.id);
+  if (target) {
+    target.interpretations = target.interpretations || [];
+    target.interpretations.push({
+      provider: pid, label: pcfg.label || pid, model,
+      at: fmtNow(), text
+    });
+    lsSet("liuyao.readings", readings);
+  }
+  return text;
 }
 
 async function copyText(text) {
@@ -446,6 +665,31 @@ async function startInterp(rid, pid) {
   const errBox = $("#interp-err");
   const startBtn = $("#start-interp");
   const stopBtn = $("#stop-interp");
+
+  if (MODE === "client") {  // 离线直连（非流式，整段返回）
+    startBtn.disabled = true;
+    stopBtn.style.display = "none";
+    errBox.hidden = true;
+    area.classList.remove("waiting");
+    area.innerHTML = '<span class="cursor">▍</span> 正在解读（直连 AI，生成完整体显示）…';
+    try {
+      const { reading } = await api("/api/readings/" + rid);
+      const text = await clientInterpret(reading, pid);
+      area.innerHTML = md(text);
+      toast("解卦完成，已保存");
+      setTimeout(() => renderReading(rid), 500);
+    } catch (e) {
+      errBox.hidden = false;
+      errBox.innerHTML = esc(hintFor(e.message, pid));
+      area.classList.add("waiting");
+      area.textContent = "解卦未完成";
+    } finally {
+      startBtn.disabled = false;
+      stopBtn.style.display = "none";
+    }
+    return;
+  }
+
   errBox.hidden = true;
   startBtn.disabled = true;
   stopBtn.style.display = "";
@@ -640,7 +884,8 @@ async function renderSettings() {
     <div class="card">
       <h2>说明</h2>
       <div class="hint">
-        · <b>LM Studio</b>：启动应用后在 Developer → Server 打开本地服务（默认 <code>http://localhost:1234/v1</code>），模型名可留空自动获取。<br>
+        · 当前运行：<b>${MODE === "server" ? "服务器模式（连本机服务，流式输出）" : "离线模式（App 内排盘，直连 AI）"}</b><br>
+        · <b>LM Studio</b>：启动应用后在 Developer → Server 打开本地服务（默认 <code>http://localhost:1234/v1</code>），模型名可留空自动获取。手机连电脑同一 Wi-Fi 时，把地址改成 <code>http://电脑IP:1234/v1</code>。<br>
         · <b>GLM 智谱</b>：到 open.bigmodel.cn 控制台获取 API Key；OpenAI 兼容地址 <code>https://open.bigmodel.cn/api/coding/paas/v4</code>，模型如 <code>glm-5.3</code>；Coding Plan 用户也可把协议切到 Anthropic 兼容（地址 <code>https://open.bigmodel.cn/api/anthropic</code>）。<br>
         · API Key 只保存在本机 <code>data/config.json</code>，请求由本服务转发，不经第三方。<br>
         · 手机使用：<code>python3 app.py --host 0.0.0.0</code> 后，同一 Wi-Fi 下访问本机 IP。
@@ -729,5 +974,12 @@ async function renderSettings() {
 }
 
 // ---------------- 启动 ----------------
+// 测试钩子（自动化验证离线模式，不影响正常功能）
+if (typeof window !== "undefined") {
+  window.__liuyao = {
+    get mode() { return MODE; }, set mode(v) { MODE = v; },
+    clientApi, clientInterpret
+  };
+}
 resetCast();
-route();
+detectMode().then(route);

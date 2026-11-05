@@ -46,7 +46,7 @@ DEFAULT_CONFIG = {
             "base": "http://localhost:1234/v1", "model": "", "api_key": "",
         },
         "glm": {
-            "label": "GLM 智谱（云端）", "protocol": "openai",
+            "label": "GLM 智谱（Coding Plan）", "protocol": "openai",
             "base": "https://open.bigmodel.cn/api/coding/paas/v4", "model": "glm-5.3", "api_key": "",
         },
     },
@@ -346,14 +346,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---------- 路由 ----------
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
-        if path == "/":
-            self._send_file(os.path.join(STATIC_DIR, "index.html"))
-        elif path == "/favicon.ico":
-            self.send_response(204)
-            self.end_headers()
-        elif path.startswith("/static/"):
-            self._serve_static(path[len("/static/"):])
-        elif path == "/api/config":
+        if path == "/api/config":
             cfg = load_config()
             for p in cfg["providers"].values():
                 p["has_key"] = bool(p.get("api_key"))
@@ -380,8 +373,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"models": fetch_models(pcfg)})
             except Exception as e:
                 self._send_json({"error": "获取模型列表失败：%s" % e}, 502)
-        else:
+        elif path.startswith("/api/"):
             self._send_json({"error": "not found"}, 404)
+        else:  # 静态资源（相对路径或 /static/ 均可，供网页与 APK 复用同一套前端）
+            rel = path.lstrip("/")
+            if not rel or rel == "index.html":
+                self._send_file(os.path.join(STATIC_DIR, "index.html"))
+            elif rel == "favicon.ico":
+                self.send_response(204)
+                self.end_headers()
+            else:
+                if rel.startswith("static/"):
+                    rel = rel[len("static/"):]
+                self._serve_static(rel)
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path

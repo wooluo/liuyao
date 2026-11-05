@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">六爻金钱卦</string>
+    <string name="title_activity_main">六爻金钱卦</string>
+    <string name="package_name">com.wooluo.liuyao</string>
+    <string name="custom_url_scheme">com.wooluo.liuyao</string>
+</resources>
