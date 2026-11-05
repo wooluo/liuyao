@@ -208,36 +208,67 @@ async function clientApi(path, opts = {}) {
   throw new Error("离线模式不支持：" + path);
 }
 
-// ---- 离线直连解卦（非流式；Capacitor 原生请求无 CORS 限制） ----
-async function clientInterpret(reading, pid) {
-  const cfg = clientRawConfig();
-  const pcfg = cfg.providers[pid];
-  if (!pcfg) throw new Error("未知 provider：" + pid);
+// ---- 离线直连解卦 ----
+// 安卓 App 内置原生 StreamHttp 插件时可流式；浏览器（受 CORS）退回非流式整段返回。
+function nativeStreamHttp() {
+  const cap = typeof window !== "undefined" && window.Capacitor;
+  if (cap && cap.Plugins && cap.Plugins.StreamHttp &&
+      (!cap.isNativePlatform || cap.isNativePlatform())) {
+    return cap.Plugins.StreamHttp;
+  }
+  return null;
+}
+
+async function resolveClientModel(pcfg) {
   let model = (pcfg.model || "").trim();
   if (!model) {
     try {
       const ms = await fetchModelsDirect(pcfg);
-      model = (ms.find((x) => !NON_CHAT_MODEL.test(x)) || ms[0] || "");
-    } catch (e) { /* 用空模型报错 */ }
+      model = ms.find((x) => !NON_CHAT_MODEL.test(x)) || ms[0] || "";
+    } catch (e) { /* 留空报错 */ }
   }
-  if (!model) throw new Error("未配置模型名，且无法从服务获取模型列表。请在设置里填写模型。");
+  return model;
+}
+
+function clientRequestBody(pcfg, model, reading, stream) {
   const msgs = LiuYao.buildMessages(reading);
   const base = (pcfg.base || "").replace(/\/+$/, "");
-  let url, headers, payload;
   if (pcfg.protocol === "anthropic") {
-    url = base + "/v1/messages";
-    headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
+    const headers = { "Content-Type": "application/json", "anthropic-version": "2023-06-01" };
     if (pcfg.api_key) { headers["x-api-key"] = pcfg.api_key; headers.Authorization = "Bearer " + pcfg.api_key; }
-    payload = { model, max_tokens: 4096, temperature: 0.7, system: msgs.system,
-                messages: [{ role: "user", content: msgs.user }] };
-  } else {
-    url = base + "/chat/completions";
-    headers = { "Content-Type": "application/json" };
-    if (pcfg.api_key) headers.Authorization = "Bearer " + pcfg.api_key;
-    payload = { model, temperature: 0.7,
-                messages: [{ role: "system", content: msgs.system }, { role: "user", content: msgs.user }] };
+    return {
+      url: base + "/v1/messages", headers,
+      payload: { model, max_tokens: 4096, temperature: 0.7, stream: !!stream, system: msgs.system,
+                 messages: [{ role: "user", content: msgs.user }] }
+    };
   }
-  const { json } = await httpJSON("POST", url, headers, payload, 300000);
+  const headers = { "Content-Type": "application/json" };
+  if (pcfg.api_key) headers.Authorization = "Bearer " + pcfg.api_key;
+  return {
+    url: base + "/chat/completions", headers,
+    payload: { model, temperature: 0.7, stream: !!stream,
+               messages: [{ role: "system", content: msgs.system }, { role: "user", content: msgs.user }] }
+  };
+}
+
+function saveClientInterpretation(reading, pid, label, model, text) {
+  if (!text) return;
+  const readings = lsGet("liuyao.readings", []);
+  const target = readings.find((x) => x.id === reading.id);
+  if (!target) return;
+  target.interpretations = target.interpretations || [];
+  target.interpretations.push({ provider: pid, label: label || pid, model, at: fmtNow(), text });
+  lsSet("liuyao.readings", readings);
+}
+
+// 非流式（浏览器离线模式）
+async function clientInterpret(reading, pid) {
+  const pcfg = clientRawConfig().providers[pid];
+  if (!pcfg) throw new Error("未知 provider：" + pid);
+  const model = await resolveClientModel(pcfg);
+  if (!model) throw new Error("未配置模型名，且无法从服务获取模型列表。请在设置里填写模型。");
+  const req = clientRequestBody(pcfg, model, reading, false);
+  const { json } = await httpJSON("POST", req.url, req.headers, req.payload, 300000);
   let text = "";
   if (json && Array.isArray(json.choices) && json.choices[0]) {
     text = (json.choices[0].message || {}).content || "";
@@ -245,17 +276,55 @@ async function clientInterpret(reading, pid) {
     text = json.content.map((b) => (b && b.text) || "").join("");
   }
   if (!text) throw new Error("模型未返回内容：" + JSON.stringify(json).slice(0, 160));
-  const readings = lsGet("liuyao.readings", []);
-  const target = readings.find((x) => x.id === reading.id);
-  if (target) {
-    target.interpretations = target.interpretations || [];
-    target.interpretations.push({
-      provider: pid, label: pcfg.label || pid, model,
-      at: fmtNow(), text
-    });
-    lsSet("liuyao.readings", readings);
-  }
+  saveClientInterpretation(reading, pid, pcfg.label, model, text);
   return text;
+}
+
+// 流式（原生 StreamHttp 插件）：SSE 增量逐段回调 onDelta，结束/停止保存已生成部分
+let nativeStreamCancel = null;
+
+function clientInterpretStream(reading, pid, onDelta) {
+  return new Promise((resolve, reject) => {
+    (async () => {
+      const plugin = nativeStreamHttp();
+      const pcfg = clientRawConfig().providers[pid];
+      if (!pcfg) { reject(new Error("未知 provider：" + pid)); return; }
+      const model = await resolveClientModel(pcfg);
+      if (!model) { reject(new Error("未配置模型名，且无法从服务获取模型列表。请在设置里填写模型。")); return; }
+      const req = clientRequestBody(pcfg, model, reading, true);
+      const id = "s" + Date.now() + "-" + Math.floor(Math.random() * 1000);
+      let acc = "", finished = false;
+      const handles = [];
+      const cleanup = () => { handles.forEach((h) => { try { h.remove && h.remove(); } catch (e) {} }); };
+      const finish = (err) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        nativeStreamCancel = null;
+        if (acc) saveClientInterpretation(reading, pid, pcfg.label, model, acc); // 停止也保留已生成部分
+        if (err) reject(err);
+        else if (!acc) reject(new Error("模型未返回内容"));
+        else resolve(acc);
+      };
+      nativeStreamCancel = () => { try { plugin.cancel({ id }); } catch (e) {} };
+      try {
+        handles.push(await plugin.addListener("stream-http-data", (e) => {
+          if (e.id !== id || !e.payload || e.payload === "[DONE]") return;
+          let obj;
+          try { obj = JSON.parse(e.payload); } catch (err) { return; }
+          let t = "";
+          if (obj.choices && obj.choices[0]) t = ((obj.choices[0].delta) || {}).content || "";
+          else if (obj.type === "content_block_delta") t = (obj.delta || {}).text || "";
+          if (t) { acc += t; onDelta(acc); }
+        }));
+        handles.push(await plugin.addListener("stream-http-end", (e) => { if (e.id === id) finish(); }));
+        handles.push(await plugin.addListener("stream-http-error", (e) => {
+          if (e.id === id) finish(new Error(e.message || "上游错误"));
+        }));
+        await plugin.request({ id, url: req.url, headers: req.headers, body: JSON.stringify(req.payload) });
+      } catch (e) { finish(e); }
+    })();
+  });
 }
 
 async function copyText(text) {
@@ -663,7 +732,10 @@ async function renderReading(id) {
       } catch (e) { toast(e.message); }
     }));
   $("#start-interp").addEventListener("click", () => startInterp(reading.id, cfg.provider));
-  $("#stop-interp").addEventListener("click", () => { if (interpCtl) interpCtl.abort(); });
+  $("#stop-interp").addEventListener("click", () => {
+    if (interpCtl) interpCtl.abort();
+    if (nativeStreamCancel) nativeStreamCancel();
+  });
 }
 
 let interpCtl = null;
@@ -675,23 +747,40 @@ async function startInterp(rid, pid) {
   const startBtn = $("#start-interp");
   const stopBtn = $("#stop-interp");
 
-  if (MODE === "client") {  // 离线直连（非流式，整段返回）
+  if (MODE === "client") {  // 离线直连：原生插件流式；浏览器退回整段返回
     startBtn.disabled = true;
-    stopBtn.style.display = "none";
     errBox.hidden = true;
     area.classList.remove("waiting");
-    area.innerHTML = '<span class="cursor">▍</span> 正在解读（直连 AI，生成完整体显示）…';
+    const stream = nativeStreamHttp();
+    stopBtn.style.display = stream ? "" : "none";
+    let buf = "", lastPaint = 0;
+    const paint = (final) => {
+      area.innerHTML = md(buf) + (final ? "" : '<span class="cursor">▍</span>');
+    };
+    area.innerHTML = stream
+      ? '<span class="cursor">▍</span>'
+      : '<span class="cursor">▍</span> 正在解读（直连 AI，生成完整体显示）…';
     try {
       const { reading } = await api("/api/readings/" + rid);
-      const text = await clientInterpret(reading, pid);
-      area.innerHTML = md(text);
+      let text;
+      if (stream) {
+        text = await clientInterpretStream(reading, pid, (acc) => {
+          buf = acc;
+          const now = performance.now();
+          if (now - lastPaint > 120) { lastPaint = now; paint(false); }
+        });
+      } else {
+        text = await clientInterpret(reading, pid);
+      }
+      buf = text;
+      paint(true);
       toast("解卦完成，已保存");
       setTimeout(() => renderReading(rid), 500);
     } catch (e) {
+      if (buf) paint(true);
       errBox.hidden = false;
       errBox.innerHTML = esc(hintFor(e.message, pid));
-      area.classList.add("waiting");
-      area.textContent = "解卦未完成";
+      if (!buf) { area.classList.add("waiting"); area.textContent = "解卦未完成"; }
     } finally {
       startBtn.disabled = false;
       stopBtn.style.display = "none";
