@@ -36,6 +36,7 @@ body {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px));
   background: rgba(246, 239, 220, 0.94);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
